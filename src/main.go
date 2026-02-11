@@ -8,30 +8,33 @@ import (
 
 func main() {
 	if len(os.Args) != 2 {
-		log.Fatal("Usage: ./gotorrent magnet_link")
+		log.Fatal("Usage: ./gotorrent \"magnet_link\"")
 	}
 
 	magnet_data, err := ParseMagnetLink(os.Args[1])
+
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Magnet data:", magnet_data)
-
-	tracker, err := NewTrackerConnection("open.demonii.com:1337")
+	tracker, err := NewTrackerConnection(magnet_data.trackers[0])
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Connected")
-
+	fmt.Println("Connected to tracker")
 	err = tracker.Intitate()
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("Initiated")
 
-	peers, err := tracker.Announce("CE7874BCBDBFEFBF55D494EFEE629583C2884E26", 10)
+	peers, err := tracker.Announce(magnet_data.hashes[0], 10)
 
 	for index, peer := range peers {
 		fmt.Printf("%v. SOCKET: %v", index, toSocketAddr(&peer))
+		err := InitiatePeerConnection(&peer, [20]string(magnet_data.hashes[0]), tracker.peer_id)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
+
 }
