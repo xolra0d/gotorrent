@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
+	"sync"
 )
 
 func main() {
@@ -12,29 +15,35 @@ func main() {
 	}
 
 	magnet_data, err := ParseMagnetLink(os.Args[1])
-
 	if err != nil {
 		log.Fatal(err)
+	} else if len(magnet_data.trackers) == 0 {
+		log.Fatal("No trackers specified")
+	} else if len(magnet_data.hashes) == 0 {
+		log.Fatal("No hashes specified")
+	} else if magnet_data.name == "" {
+		magnet_data.name = "torrent"
 	}
-	tracker, err := NewTrackerConnection(magnet_data.trackers[0])
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("Connected to tracker")
-	err = tracker.Intitate()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("Initiated")
 
-	peers, err := tracker.Announce(magnet_data.hashes[0], 10)
+	peer_id := RandomPeerId()
+	var wg sync.WaitGroup
 
-	for index, peer := range peers {
-		fmt.Printf("%v. SOCKET: %v", index, toSocketAddr(&peer))
-		err := InitiatePeerConnection(&peer, [20]string(magnet_data.hashes[0]), tracker.peer_id)
+	peers := make(chan netip.AddrPort)
+	trackers := make(chan TrackerConnection)
+	for _, tracker_ip := range magnet_data.trackers {
+		wg.Go(func() { GetPeers(context.Background(), tracker_ip, peer_id, magnet_data.hashes[0], peers, trackers) })
+	}
+
+	go func() {
+		wg.Wait()
+		close(peers)
+
+	}()
+
+	for peer := range peers {
+		err := InitiatePeerConnection(peer, []byte(magnet_data.hashes[0]), peer_id)
 		if err != nil {
-			log.Fatal(err)
+			fmt.Println(err)
 		}
 	}
-
 }

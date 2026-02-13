@@ -42,7 +42,7 @@ func ParseMagnetLink(link string) (MagnetData, error) {
 	link = link[8:]
 	result := MagnetData{
 		trackers: []string{},
-		hashes:   make(map[int]string),
+		hashes:   map[int]string{},
 	}
 
 	for {
@@ -77,8 +77,8 @@ func ParseMagnetLink(link string) (MagnetData, error) {
 				return MagnetData{}, InvalidMagnetError(fmt.Sprintf("Currently, only support bittorent 1.0 hashes. Take a look at: https://en.wikipedia.org/wiki/Magnet_URI_scheme#:~:text=BitTorrent%20info%20hash%20%28BTIH"))
 			}
 			hash = string(hash[9:])
-			prev, ok := result.hashes[int(hash_index)]
-			if ok {
+
+			if prev, ok := result.hashes[int(hash_index)]; ok {
 				return MagnetData{}, InvalidMagnetError(fmt.Sprintf("the same hash index in xt is repeated: %v for hash (%v) and (%v)", prev, hash))
 			}
 			result.hashes[int(hash_index)] = hash
@@ -99,8 +99,7 @@ func ParseMagnetLink(link string) (MagnetData, error) {
 					return MagnetData{}, InvalidMagnetError("cannot mix `xt.NUM` and `xt` parameters.")
 				}
 
-				_, ok := result.hashes[0]
-				if ok {
+				if _, ok := result.hashes[0]; ok {
 					return MagnetData{}, InvalidMagnetError("cannot have two `xt` params in the link.")
 				}
 
@@ -112,10 +111,7 @@ func ParseMagnetLink(link string) (MagnetData, error) {
 			case Name:
 				result.name = value
 			case Tracker:
-				if !strings.HasPrefix(value, "udp://") || len(value) < 16 {
-					continue
-				}
-				result.trackers = append(result.trackers, value[6:])
+				result.trackers = append(result.trackers, value)
 			default:
 				// Ignore unknown parameters
 			}

@@ -1,14 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"math/rand"
 	"net"
 	"net/netip"
-	"strconv"
 	"strings"
+	"time"
 )
 
 const PROTOCOL_ID int64 = 0x41727101980
@@ -34,12 +36,11 @@ func (error RetryableError) Error() string {
 	return string(error)
 }
 
+const MAX_RETRIES = 8
 const CONNECT_REQUEST_LENGTH = 4 + 4 + 8
 const CONNECT_RESPONSE_LENGTH = 4 + 4 + 8
 const ANNOUNCE_REQUEST_LENGTH = 98
 const ANNOUNCE_RESPONSE_LENGTH_MIN = 4 + 4 + 4 + 4 + 4
-const IPv4_LENGTH = 4
-const IPv6_LENGTH = 16
 
 func RandomTransactionId() int32 {
 	return rand.Int31()
@@ -49,6 +50,35 @@ func RandomPeerId() [20]byte {
 	peer_id := [20]byte{'G', 'T'}
 	rand.Read(peer_id[2:])
 	return peer_id
+}
+
+func getResponseTimeout(retry int) time.Duration {
+	return time.Second * time.Duration(15*int(math.Pow(float64(2), float64(retry))))
+}
+
+func getIPLengthAndPort(addr net.Addr) (int, int) {
+	switch v := addr.(type) {
+	case *net.UDPAddr:
+		ip := v.IP
+		port := v.Port
+
+		if ip.To4() != nil {
+			return net.IPv4len, port
+		} else {
+			return net.IPv6len, port
+		}
+	case *net.TCPAddr:
+		ip := v.IP
+		port := v.Port
+
+		if ip.To4() != nil {
+			return net.IPv4len, port
+		} else {
+			return net.IPv6len, port
+		}
+	default:
+		panic(fmt.Sprintf("Unknown addr type: %T. Allowed types are `net.UDPAddr`, `net.TCPAddr`.", v))
+	}
 }
 
 func GenerateConnectBytes(transaction_id int32) []byte {
@@ -139,7 +169,7 @@ func DecodeConnectResponse(buffer []byte, transaction_id int32) (int64, error) {
 	}
 }
 
-func DecodeAnnounceResponse(buffer []byte, transaction_id int32, peer_count, ip_length int) (uint32, []PeerInfo, error) {
+func DecodeAnnounceResponse(buffer []byte, transaction_id int32, peer_count, ip_length int) (uint32, []netip.AddrPort, error) {
 	// FORMAT
 	// Offset      Size            Name            Value
 	// 0           32-bit integer  action          1 // announce
@@ -150,33 +180,33 @@ func DecodeAnnounceResponse(buffer []byte, transaction_id int32, peer_count, ip_
 	// 20 + 6 * n  32-bit integer  IP address
 	// 24 + 6 * n  16-bit integer  TCP port
 	if len(buffer) != ANNOUNCE_RESPONSE_LENGTH_MIN+(ip_length+2)*peer_count {
-		return 0, []PeerInfo{}, fmt.Errorf("Expected to receive buffer of length `%v`, got `%v` instead during announce.", ANNOUNCE_RESPONSE_LENGTH_MIN+(ip_length+2)*peer_count, len(buffer))
+		return 0, []netip.AddrPort{}, fmt.Errorf("Expected to receive buffer of length `%v`, got `%v` instead during announce.", ANNOUNCE_RESPONSE_LENGTH_MIN+(ip_length+2)*peer_count, len(buffer))
 	}
 
 	recv_transaction_id := binary.BigEndian.Uint32(buffer[4:])
 	if recv_transaction_id != uint32(transaction_id) {
-		return 0, []PeerInfo{}, fmt.Errorf("Expected to receive `%v` for transaction id in connection response, got `%v` instead.", transaction_id, recv_transaction_id)
+		return 0, []netip.AddrPort{}, fmt.Errorf("Expected to receive `%v` for transaction id in connection response, got `%v` instead.", transaction_id, recv_transaction_id)
 	}
 
 	action := ActionType(binary.BigEndian.Uint32(buffer))
 	switch action {
 	case ANNOUNCE:
 		interval := binary.BigEndian.Uint32(buffer[8:])
-		peers := make([]PeerInfo, 0, peer_count)
+		peers := make([]netip.AddrPort, 0, peer_count)
 		for index := range peer_count {
 			start := ANNOUNCE_RESPONSE_LENGTH_MIN + index*(ip_length+2)
 			ip, ok := netip.AddrFromSlice(buffer[start : start+ip_length])
 			if !ok {
-				return 0, []PeerInfo{}, fmt.Errorf("Could not convert ip (%v) into IP addr.", buffer[start:start+ip_length])
+				return 0, []netip.AddrPort{}, fmt.Errorf("Could not convert ip (%v) into IP addr.", buffer[start:start+ip_length])
 			}
 			port := binary.BigEndian.Uint16(buffer[start+ip_length : start+ip_length+2])
-			peers = append(peers, PeerInfo{ip, port})
+			peers = append(peers, netip.AddrPortFrom(ip, port))
 		}
 		return interval, peers, nil
 	case ERROR:
-		return 0, []PeerInfo{}, RetryableError(string(buffer[8:]))
+		return 0, []netip.AddrPort{}, RetryableError(string(buffer[8:]))
 	default:
-		return 0, []PeerInfo{}, fmt.Errorf("Expected to receive `CONNECT (%v)` for action in connection response, got `%v` instead.", uint32(CONNECT), action)
+		return 0, []netip.AddrPort{}, fmt.Errorf("Expected to receive `CONNECT (%v)` for action in connection response, got `%v` instead.", uint32(CONNECT), action)
 	}
 
 }
@@ -196,35 +226,53 @@ type TrackerConnection struct {
 	key            uint32
 }
 
-func NewTrackerConnection(tracker_socket string) (TrackerConnection, error) {
-	handle, err := net.Dial("udp", tracker_socket)
+func newTrackerConnection(ctx context.Context, tracker_socket string, peer_id [20]byte) (TrackerConnection, error) {
+	if !strings.HasPrefix(tracker_socket, "udp://") {
+		return TrackerConnection{}, fmt.Errorf("Currently support only UDP trackers.")
+	}
+	tracker_socket = tracker_socket[6:]
+	if strings.HasSuffix(tracker_socket, "/announce") {
+		tracker_socket = tracker_socket[:len(tracker_socket)-9]
+	}
+
+	var d net.Dialer
+	handle, err := d.DialContext(ctx, "udp", tracker_socket)
 	if err != nil {
 		return TrackerConnection{}, err
 	}
-	peer_id := RandomPeerId()
-	handle_socket_str := handle.LocalAddr().String()
-	handle_socket_addr := strings.Split(handle_socket_str, ":")
 
-	if len(handle_socket_addr) == 2 { // IPv4
-		port, err := strconv.ParseUint(handle_socket_addr[len(handle_socket_addr)-1], 10, 16)
-		if err != nil {
-			return TrackerConnection{}, err
-		}
-		return TrackerConnection{handle: handle, ip_length: IPv4_LENGTH, port: uint16(port), peer_id: peer_id}, nil
-	} else if len(handle_socket_addr) == 9 { // IPv6
-		port, err := strconv.ParseUint(handle_socket_addr[len(handle_socket_addr)-1], 10, 16)
-		if err != nil {
-			return TrackerConnection{}, err
-		}
-		return TrackerConnection{handle: handle, ip_length: IPv6_LENGTH, port: uint16(port), peer_id: peer_id}, nil
-	} else {
-		return TrackerConnection{}, fmt.Errorf("Invalid socket addr binded by `net` (%v)", handle_socket_str)
-	}
+	ip_length, port := getIPLengthAndPort(handle.LocalAddr())
+	return TrackerConnection{handle: handle, ip_length: ip_length, port: uint16(port), peer_id: peer_id}, nil
 }
 
-func (conn *TrackerConnection) Intitate() error {
+func NewTrackerConnection(ctx context.Context, tracker_socket string, peer_id [20]byte) (TrackerConnection, error) {
+	var last_err error
+
+	for retry := range MAX_RETRIES {
+		if ctx.Err() != nil {
+			return TrackerConnection{}, ctx.Err()
+		}
+
+		retry_ctx, cancel := context.WithTimeout(ctx, getResponseTimeout(retry))
+		conn, err := newTrackerConnection(retry_ctx, tracker_socket, peer_id)
+		cancel()
+		if err == nil {
+			return conn, nil
+		}
+
+		last_err = err
+	}
+	return TrackerConnection{}, fmt.Errorf("Could not connect to tracker: %v", last_err.Error())
+}
+
+func (conn *TrackerConnection) intitate(ctx context.Context) error {
 	new_transaction_id := RandomTransactionId()
 	conn_bytes := GenerateConnectBytes(new_transaction_id)
+
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.handle.SetDeadline(deadline)
+		defer conn.handle.SetDeadline(time.Time{})
+	}
 
 	n, err := conn.handle.Write(conn_bytes)
 	if err != nil {
@@ -232,7 +280,6 @@ func (conn *TrackerConnection) Intitate() error {
 	} else if n != CONNECT_REQUEST_LENGTH {
 		return fmt.Errorf("Expected to send `%v` bytes to tracker, sent `%v` instead.", CONNECT_REQUEST_LENGTH, n)
 	}
-	fmt.Println("wrote")
 	response_buffer := make([]byte, CONNECT_RESPONSE_LENGTH)
 	n, err = conn.handle.Read(response_buffer)
 	if err != nil {
@@ -240,7 +287,6 @@ func (conn *TrackerConnection) Intitate() error {
 	} else if n != CONNECT_RESPONSE_LENGTH {
 		return fmt.Errorf("Expected to receive `%v` bytes from tracker, received `%v` instead.", CONNECT_RESPONSE_LENGTH, n)
 	}
-	fmt.Println("read")
 	conn_id, err := DecodeConnectResponse(response_buffer, new_transaction_id)
 	if err != nil {
 		return err
@@ -252,33 +298,105 @@ func (conn *TrackerConnection) Intitate() error {
 	return nil
 }
 
-func (conn *TrackerConnection) Announce(hash string, peers_count int) ([]PeerInfo, error) {
+func (conn *TrackerConnection) Initiate(ctx context.Context) error {
+	var last_err error
+
+	for retry := range MAX_RETRIES {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		retry_ctx, cancel := context.WithTimeout(ctx, getResponseTimeout(retry))
+		err := conn.intitate(retry_ctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+
+		last_err = err
+	}
+	return fmt.Errorf("Could not connect to tracker: %v", last_err.Error())
+}
+
+func (conn *TrackerConnection) announce(ctx context.Context, hash string, peers_count int) ([]netip.AddrPort, error) {
 	hash_arr, err := hex.DecodeString(hash)
 	if err != nil {
-		return []PeerInfo{}, err
+		return []netip.AddrPort{}, err
 	}
 
 	req := AnnounceRequest{conn.connection_id, conn.transaction_id, [20]byte(hash_arr), conn.peer_id, conn.downloaded, conn.left, conn.uploaded, NONE, conn.key, int32(peers_count), conn.port}
 
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.handle.SetDeadline(deadline)
+		defer conn.handle.SetDeadline(time.Time{})
+	}
+
 	ann_bytes := GenerateAnnounceBytes(req)
 	n, err := conn.handle.Write(ann_bytes)
 	if err != nil {
-		return []PeerInfo{}, err
+		return []netip.AddrPort{}, err
 	} else if n != ANNOUNCE_REQUEST_LENGTH {
-		return []PeerInfo{}, fmt.Errorf("Expected to send `%v` bytes to tracker, sent `%v` instead.", ANNOUNCE_REQUEST_LENGTH, n)
+		return []netip.AddrPort{}, fmt.Errorf("Expected to send `%v` bytes to tracker, sent `%v` instead.", ANNOUNCE_REQUEST_LENGTH, n)
 	}
 
 	response_buffer := make([]byte, ANNOUNCE_RESPONSE_LENGTH_MIN+(conn.ip_length+2)*peers_count)
 	n, err = conn.handle.Read(response_buffer)
 	if err != nil {
-		return []PeerInfo{}, err
+		return []netip.AddrPort{}, err
 	}
 
-	interval, peers, err := DecodeAnnounceResponse(response_buffer, conn.transaction_id, conn.ip_length, peers_count)
+	interval, peers, err := DecodeAnnounceResponse(response_buffer, conn.transaction_id, peers_count, conn.ip_length)
 	if err != nil {
-		return []PeerInfo{}, err
+		return []netip.AddrPort{}, err
 	}
-
 	conn.interval = interval
 	return peers, nil
+}
+
+func (conn *TrackerConnection) Announce(ctx context.Context, hash string, peers_count int) ([]netip.AddrPort, error) {
+	var last_err error
+
+	for retry := range MAX_RETRIES {
+		if ctx.Err() != nil {
+			return []netip.AddrPort{}, ctx.Err()
+		}
+
+		retry_ctx, cancel := context.WithTimeout(ctx, getResponseTimeout(retry))
+		peers, err := conn.announce(retry_ctx, hash, peers_count)
+		cancel()
+		if err == nil {
+			return peers, nil
+		}
+
+		// Only retry on retryable errors
+		if _, ok := err.(RetryableError); !ok {
+			return []netip.AddrPort{}, err
+		}
+
+		last_err = err
+	}
+	return []netip.AddrPort{}, fmt.Errorf("Could not announce to tracker: %v", last_err.Error())
+}
+
+func GetPeers(ctx context.Context, tracker_socket string, peer_id [20]byte, hash string, peers_ch chan netip.AddrPort, trackers chan TrackerConnection) {
+	conn, err := NewTrackerConnection(ctx, tracker_socket, peer_id)
+	if err != nil {
+		fmt.Printf("Could not connect to %v tracker: %v", tracker_socket, err)
+		return
+	}
+	err = conn.Initiate(ctx)
+	if err != nil {
+		fmt.Printf("Could not intitate to %v tracker: %v", tracker_socket, err)
+		return
+	}
+	peers, err := conn.Announce(ctx, hash, 20)
+	if err != nil {
+		fmt.Printf("Could not announce to %v tracker: %v", tracker_socket, err)
+		return
+	}
+
+	for _, peer := range peers {
+		peers_ch <- peer
+	}
+	trackers <- conn
 }

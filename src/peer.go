@@ -13,11 +13,7 @@ type PeerInfo struct {
 	port uint16
 }
 
-func toSocketAddr(peer_info *PeerInfo) string {
-	return fmt.Sprintf("%v:%v", peer_info.ip.String(), peer_info.port)
-}
-
-func InitiatePeerConnection(peer_info *PeerInfo, hash [20]byte, my_peer_id [20]byte) error {
+func InitiatePeerConnection(peer_info netip.AddrPort, hash []byte, my_peer_id [20]byte) error {
 	reserved := [8]byte{}
 
 	handshake_bytes := make([]byte, 0, 68)
@@ -27,7 +23,7 @@ func InitiatePeerConnection(peer_info *PeerInfo, hash [20]byte, my_peer_id [20]b
 	handshake_bytes = append(handshake_bytes, hash[:]...)
 	handshake_bytes = append(handshake_bytes, my_peer_id[:]...)
 
-	conn, err := net.Dial("tcp", toSocketAddr(peer_info))
+	conn, err := net.Dial("tcp", peer_info.String())
 	if err != nil {
 		return err
 	}
