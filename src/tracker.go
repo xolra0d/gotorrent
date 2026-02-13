@@ -235,6 +235,7 @@ func newTrackerConnection(ctx context.Context, tracker_socket string, peer_id [2
 		tracker_socket = tracker_socket[:len(tracker_socket)-9]
 	}
 
+	fmt.Println("TRACKER URL:", tracker_socket)
 	var d net.Dialer
 	handle, err := d.DialContext(ctx, "udp", tracker_socket)
 	if err != nil {
@@ -381,17 +382,17 @@ func (conn *TrackerConnection) Announce(ctx context.Context, hash string, peers_
 func GetPeers(ctx context.Context, tracker_socket string, peer_id [20]byte, hash string, peers_ch chan netip.AddrPort, trackers chan TrackerConnection) {
 	conn, err := NewTrackerConnection(ctx, tracker_socket, peer_id)
 	if err != nil {
-		fmt.Printf("Could not connect to %v tracker: %v", tracker_socket, err)
+		fmt.Printf("Could not connect to %v tracker: %v\n", tracker_socket, err)
 		return
 	}
 	err = conn.Initiate(ctx)
 	if err != nil {
-		fmt.Printf("Could not intitate to %v tracker: %v", tracker_socket, err)
+		fmt.Printf("Could not intitate to %v tracker: %v\n", tracker_socket, err)
 		return
 	}
 	peers, err := conn.Announce(ctx, hash, 20)
 	if err != nil {
-		fmt.Printf("Could not announce to %v tracker: %v", tracker_socket, err)
+		fmt.Printf("Could not announce to %v tracker: %v\n", tracker_socket, err)
 		return
 	}
 
