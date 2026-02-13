@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/netip"
@@ -25,25 +26,28 @@ func main() {
 		magnet_data.name = "torrent"
 	}
 
+	d, _ := hex.DecodeString(magnet_data.hashes[0])
+	fmt.Println(d)
+	log.Fatal("")
+	var tracker_wg sync.WaitGroup
 	peer_id := RandomPeerId()
-	var wg sync.WaitGroup
-
-	peers := make(chan netip.AddrPort)
-	trackers := make(chan TrackerConnection)
+	peers := make(chan netip.AddrPort, 1000)
+	trackers := make(chan TrackerConnection, 10)
 	for _, tracker_ip := range magnet_data.trackers {
-		wg.Go(func() { GetPeers(context.Background(), tracker_ip, peer_id, magnet_data.hashes[0], peers, trackers) })
+		tracker_wg.Go(func() { GetPeers(context.Background(), tracker_ip, peer_id, magnet_data.hashes[0], peers, trackers) })
 	}
 
 	go func() {
-		wg.Wait()
+		tracker_wg.Wait()
 		close(peers)
-
 	}()
 
+	var peer_wg sync.WaitGroup
 	for peer := range peers {
-		err := InitiatePeerConnection(peer, []byte(magnet_data.hashes[0]), peer_id)
-		if err != nil {
-			fmt.Println(err)
-		}
+		fmt.Println(peer)
+		// peer_wg.Go(func() { InitiatePeerConnection(context.Background(), peer, []byte(magnet_data.hashes[0]), peer_id) })
 	}
+
+	tracker_wg.Wait()
+	peer_wg.Wait()
 }

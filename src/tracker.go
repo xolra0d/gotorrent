@@ -200,6 +200,11 @@ func DecodeAnnounceResponse(buffer []byte, transaction_id int32, peer_count, ip_
 				return 0, []netip.AddrPort{}, fmt.Errorf("Could not convert ip (%v) into IP addr.", buffer[start:start+ip_length])
 			}
 			port := binary.BigEndian.Uint16(buffer[start+ip_length : start+ip_length+2])
+
+			if ip.IsUnspecified() { // no more peers
+				return interval, peers, nil
+			}
+
 			peers = append(peers, netip.AddrPortFrom(ip, port))
 		}
 		return interval, peers, nil
@@ -250,6 +255,7 @@ func NewTrackerConnection(ctx context.Context, tracker_socket string, peer_id [2
 	var last_err error
 
 	for retry := range MAX_RETRIES {
+		fmt.Println("try1", last_err)
 		if ctx.Err() != nil {
 			return TrackerConnection{}, ctx.Err()
 		}
@@ -303,6 +309,7 @@ func (conn *TrackerConnection) Initiate(ctx context.Context) error {
 	var last_err error
 
 	for retry := range MAX_RETRIES {
+		fmt.Println("try2", last_err)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -358,6 +365,7 @@ func (conn *TrackerConnection) Announce(ctx context.Context, hash string, peers_
 	var last_err error
 
 	for retry := range MAX_RETRIES {
+		fmt.Println("try3", last_err)
 		if ctx.Err() != nil {
 			return []netip.AddrPort{}, ctx.Err()
 		}
@@ -390,14 +398,18 @@ func GetPeers(ctx context.Context, tracker_socket string, peer_id [20]byte, hash
 		fmt.Printf("Could not intitate to %v tracker: %v\n", tracker_socket, err)
 		return
 	}
-	peers, err := conn.Announce(ctx, hash, 20)
+	peers, err := conn.Announce(ctx, hash, 100)
 	if err != nil {
 		fmt.Printf("Could not announce to %v tracker: %v\n", tracker_socket, err)
 		return
 	}
 
+	fmt.Println("yayy", peers)
+
 	for _, peer := range peers {
 		peers_ch <- peer
 	}
+	fmt.Println("sent")
 	trackers <- conn
+	defer fmt.Println("should end")
 }
