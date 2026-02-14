@@ -21,10 +21,10 @@ func (error InvalidMagnetError) Error() string {
 }
 
 type MagnetData struct {
-	name           string
-	trackers       []string
-	hashes         map[int]string
-	multiple_files bool
+	name          string
+	trackers      []string
+	hashes        map[int]string
+	multipleFiles bool
 }
 
 func toHash(hash []byte) string {
@@ -46,7 +46,7 @@ func ParseMagnetLink(link string) (MagnetData, error) {
 	}
 
 	for {
-		next_ampersand := strings.Index(link, "&")
+		nextAmpersand := strings.Index(link, "&")
 		if len(link) < 4 { // min pair is xx=d
 			return MagnetData{}, InvalidMagnetError(fmt.Sprintf("invalid remainding bytes: %v", link))
 		}
@@ -55,47 +55,47 @@ func ParseMagnetLink(link string) (MagnetData, error) {
 				return MagnetData{}, InvalidMagnetError(fmt.Sprintf("invalid remainding bytes: %v", link))
 			} else if link[4] != '=' {
 				return MagnetData{}, InvalidMagnetError(fmt.Sprintf("expected `=`, got %v instead. Left bytes: %v", string(link[4]), link[3:]))
-			} else if len(result.hashes) != 0 || !result.multiple_files {
+			} else if len(result.hashes) != 0 || !result.multipleFiles {
 				return MagnetData{}, InvalidMagnetError("cannot mix `xt.NUM` and `xt` parameters.")
 			}
-			result.multiple_files = true
-			hash_index := link[3]
-			if hash_index >= '0' && hash_index <= '9' {
-				hash_index = hash_index - '0'
+			result.multipleFiles = true
+			hashIndex := link[3]
+			if hashIndex >= '0' && hashIndex <= '9' {
+				hashIndex = hashIndex - '0'
 			} else {
-				return MagnetData{}, InvalidMagnetError(fmt.Sprintf("invalid hash index in xt: %v. Must be between 0 and 9.", hash_index))
+				return MagnetData{}, InvalidMagnetError(fmt.Sprintf("invalid hash index in xt: %v. Must be between 0 and 9.", hashIndex))
 			}
 			var hash_end int
-			if next_ampersand == -1 {
+			if nextAmpersand == -1 {
 				hash_end = len(link)
 			} else {
-				hash_end = next_ampersand
+				hash_end = nextAmpersand
 			}
 
-			hash := string(link[5:hash_end])
+			hash := link[5:hash_end]
 			if !strings.HasPrefix(hash, "urn:btih:") {
 				return MagnetData{}, InvalidMagnetError(fmt.Sprintf("Currently, only support bittorent 1.0 hashes. Take a look at: https://en.wikipedia.org/wiki/Magnet_URI_scheme#:~:text=BitTorrent%20info%20hash%20%28BTIH"))
 			}
-			hash = string(hash[9:])
+			hash = hash[9:]
 
-			if prev, ok := result.hashes[int(hash_index)]; ok {
+			if prev, ok := result.hashes[int(hashIndex)]; ok {
 				return MagnetData{}, InvalidMagnetError(fmt.Sprintf("the same hash index in xt is repeated: %v for hash (%v) and (%v)", prev, hash))
 			}
-			result.hashes[int(hash_index)] = hash
+			result.hashes[int(hashIndex)] = hash
 		} else if link[2] != '=' {
 			return MagnetData{}, InvalidMagnetError(fmt.Sprintf("invalid remainding bytes: %v", link))
 		} else {
-			var value_end int
-			if next_ampersand == -1 {
-				value_end = len(link)
+			var valueEnd int
+			if nextAmpersand == -1 {
+				valueEnd = len(link)
 			} else {
-				value_end = next_ampersand
+				valueEnd = nextAmpersand
 			}
-			value := link[3:value_end]
+			value := link[3:valueEnd]
 
 			switch MagnetKey(string(link[:2])) {
 			case Hash:
-				if result.multiple_files {
+				if result.multipleFiles {
 					return MagnetData{}, InvalidMagnetError("cannot mix `xt.NUM` and `xt` parameters.")
 				}
 
@@ -106,7 +106,7 @@ func ParseMagnetLink(link string) (MagnetData, error) {
 				if !strings.HasPrefix(value, "urn:btih:") {
 					return MagnetData{}, InvalidMagnetError(fmt.Sprintf("Currently, only support bittorent 1.0 hashes. Take a look at: https://en.wikipedia.org/wiki/Magnet_URI_scheme#:~:text=BitTorrent%20info%20hash%20%28BTIH"))
 				}
-				hash := string(value[9:])
+				hash := value[9:]
 				result.hashes[0] = hash
 			case Name:
 				result.name = value
@@ -117,10 +117,10 @@ func ParseMagnetLink(link string) (MagnetData, error) {
 			}
 		}
 
-		if next_ampersand == -1 {
+		if nextAmpersand == -1 {
 			break
 		}
-		link = link[next_ampersand+1:]
+		link = link[nextAmpersand+1:]
 	}
 	return result, nil
 }
