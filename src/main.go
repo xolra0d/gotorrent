@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"net/netip"
 	"os"
 	"sync"
+	"time"
 )
 
 func main() {
@@ -15,39 +17,59 @@ func main() {
 		log.Fatal("Usage: ./gotorrent \"magnet_link\"")
 	}
 
-	magnet_data, err := ParseMagnetLink(os.Args[1])
+	magnetData, err := ParseMagnetLink(os.Args[1])
 	if err != nil {
 		log.Fatal(err)
-	} else if len(magnet_data.trackers) == 0 {
+	} else if len(magnetData.trackers) == 0 {
 		log.Fatal("No trackers specified")
-	} else if len(magnet_data.hashes) == 0 {
+	} else if len(magnetData.hashes) == 0 {
 		log.Fatal("No hashes specified")
-	} else if magnet_data.name == "" {
-		magnet_data.name = "torrent"
+	} else if magnetData.name == "" {
+		magnetData.name = "torrent"
 	}
 
-	d, _ := hex.DecodeString(magnet_data.hashes[0])
-	fmt.Println(d)
-	log.Fatal("")
-	var tracker_wg sync.WaitGroup
-	peer_id := RandomPeerId()
+	hash, err := hex.DecodeString(magnetData.hashes[0])
+	if err != nil {
+		panic(err)
+	}
+
+	var trackerWg sync.WaitGroup
+	peerId := RandomPeerId()
 	peers := make(chan netip.AddrPort, 1000)
 	trackers := make(chan TrackerConnection, 10)
-	for _, tracker_ip := range magnet_data.trackers {
-		tracker_wg.Go(func() { GetPeers(context.Background(), tracker_ip, peer_id, magnet_data.hashes[0], peers, trackers) })
+	for _, trackerIp := range magnetData.trackers {
+		trackerWg.Go(func() { _ = GetPeers(context.Background(), trackerIp, peerId, magnetData.hashes[0], peers, trackers) })
 	}
 
 	go func() {
-		tracker_wg.Wait()
+		trackerWg.Wait()
 		close(peers)
 	}()
 
-	var peer_wg sync.WaitGroup
+	var peerWg sync.WaitGroup
 	for peer := range peers {
-		fmt.Println(peer)
-		// peer_wg.Go(func() { InitiatePeerConnection(context.Background(), peer, []byte(magnet_data.hashes[0]), peer_id) })
+		peerWg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*50)
+			defer cancel()
+			conn, err := initiatePeerConnection(ctx, peer, hash, peerId, nil)
+			if err != nil {
+				fmt.Printf("PEER %v: ERROR: %v\n", peer, err)
+				return
+			}
+			err = conn.GetMetadata()
+			if err != nil {
+				fmt.Printf("PEER %v: ERROR: %v\n", peer, err)
+				return
+			}
+			piece, err := conn.DownloadPiece(0)
+			if err != nil {
+				fmt.Printf("PEER %v: ERROR: %v\n", peer, err)
+				return
+			}
+			fmt.Printf("PEER %v: SUCC: %v\n", peer, sha1.Sum(piece))
+		})
 	}
 
-	tracker_wg.Wait()
-	peer_wg.Wait()
+	trackerWg.Wait()
+	peerWg.Wait()
 }

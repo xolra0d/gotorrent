@@ -1,13 +1,14 @@
 package main
 
 import (
+	"encoding/hex"
 	"slices"
 	"testing"
 )
 
 func TestGenerateConnectBytes(t *testing.T) {
-	transaction_id := int32(0x00876543)
-	bytes := GenerateConnectBytes(transaction_id)
+	transactionId := int32(0x00876543)
+	bytes := GenerateConnectBytes(transactionId)
 	want := [16]byte{
 		0x00, 0x00, 0x04, 0x17, 0x27, 0x10, 0x19, 0x80, // PROTOCOL_ID
 		0x00, 0x00, 0x00, 0x00, // CONNECT action
@@ -20,24 +21,34 @@ func TestGenerateConnectBytes(t *testing.T) {
 }
 
 func TestAnnounceConnectBytes(t *testing.T) {
-	transaction_id := int32(0x1234)
-	connection_id := int64(0x8888BEEF)
-	peer_id := [20]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19}
+	transactionId := int32(0x1234)
+	connectionId := int64(0x8888BEEF)
+	peerId := [20]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19}
 	hash := "0123456789ABCDE0123456789ABCDE0123456789"
 	downloaded := int64(0x0123456789)
 	left := int64(0x9876543210)
 	uploaded := int64(0x1122334455667788)
 	event := NONE
-	ip_address := uint32(0x9764310A)
 	key := uint32(0xBEEFCAFE)
-	num_want := int32(0x0DEADBAB)
+	numWant := int32(0x0DEADBAB)
 	port := uint16(0x9321)
+	hashArr, _ := hex.DecodeString(hash)
 
-	bytes, err := GenerateAnnounceBytes(transaction_id, connection_id, peer_id, hash, downloaded, left, uploaded, event, ip_address, key, num_want, port)
-	if err != nil {
-		t.Error(err)
-		return
+	req := AnnounceRequest{
+		ConnectionID:  connectionId,
+		TransactionID: transactionId,
+		Hash:          [20]byte(hashArr),
+		PeerID:        peerId,
+		Downloaded:    downloaded,
+		Left:          left,
+		Uploaded:      uploaded,
+		Event:         event,
+		Key:           key,
+		NumWant:       numWant,
+		Port:          port,
 	}
+
+	bytes := GenerateAnnounceBytes(req)
 
 	want := [98]byte{
 		0x00, 0x00, 0x00, 0x00, 0x88, 0x88, 0xBE, 0xEF, // CONNECTION_ID

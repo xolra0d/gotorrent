@@ -391,24 +391,23 @@ func (conn *TrackerConnection) Announce(ctx context.Context, hash string, peersC
 	return []netip.AddrPort{}, fmt.Errorf("could not announce to tracker: %v", lastErr)
 }
 
-func GetPeers(ctx context.Context, trackerSocket string, peerId [20]byte, hash string, peersCh chan netip.AddrPort, trackers chan TrackerConnection) {
+func GetPeers(ctx context.Context, trackerSocket string, peerId [20]byte, hash string, peersCh chan netip.AddrPort, trackers chan TrackerConnection) error {
 	conn, err := NewTrackerConnection(ctx, trackerSocket, peerId)
 	if err != nil {
-		fmt.Printf("Could not connect to %v tracker: %v\n", trackerSocket, err)
-		return
+		return fmt.Errorf("Could not connect to %v tracker: %v\n", trackerSocket, err)
+
 	}
 	err = conn.Initiate(ctx)
 	if err != nil {
-		fmt.Printf("Could not intimate to %v tracker: %v\n", trackerSocket, err)
-		return
+		return fmt.Errorf("Could not intimate to %v tracker: %v\n", trackerSocket, err)
 	}
 	peers, err := conn.Announce(ctx, hash, 100)
 	if err != nil {
-		fmt.Printf("Could not announce to %v tracker: %v\n", trackerSocket, err)
-		return
+		return fmt.Errorf("Could not announce to %v tracker: %v\n", trackerSocket, err)
 	}
 	for _, peer := range peers {
 		peersCh <- peer
 	}
 	trackers <- conn
+	return nil
 }
